@@ -12,13 +12,12 @@ public class RedTexturesClient implements ClientModInitializer {
     public void onInitializeClient() {
         RedConfig.load();
 
-        // /red menu
+        // /redmenu
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
-                dispatcher.register(ClientCommandManager.literal("red")
-                        .then(ClientCommandManager.literal("menu").executes(ctx -> {
-                            pendingOpen = true;
-                            return 1;
-                        }))));
+                dispatcher.register(ClientCommandManager.literal("redmenu").executes(ctx -> {
+                    pendingOpen = true;
+                    return 1;
+                })));
 
         // Screen erst im naechsten Tick oeffnen, damit der Chat sich nicht darueber schliesst.
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
