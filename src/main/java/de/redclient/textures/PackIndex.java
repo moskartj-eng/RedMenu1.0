@@ -2,57 +2,57 @@ package de.redclient.textures;
 
 import net.fabricmc.loader.api.FabricLoader;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /** Liest alle Packs aus .minecraft/redclient/packs und indexiert deren Texturen. */
 public final class PackIndex {
-    public record Entry(String pack, String path, String name, String display, String category,
-                        String sub, Path source, boolean zip) {
-        public String key() {
+    /**
+     * @param path   Zielpfad im Spiel, z. B. assets/minecraft/textures/item/diamond_sword.png
+     * @param arch   Pfad innerhalb des Packs (kann einen Wurzelordner enthalten)
+     * @param folder Unterordner unterhalb von textures/, z. B. item oder entity/equipment
+     */
+    public record Entry(String pack, String path, String arch, String name, String folder,
+                        String category, Path source, boolean zip) {
+        public String uid() {
             return pack + "|" + path;
         }
     }
 
-    /** Vorschau: w x h Pixel, ARGB. */
-    public record Preview(int w, int h, int[] px) {
-    }
-
     public static final String[] CATEGORIES = {
-            "Alle", "Crystals", "Swords", "Axes", "Pickaxes", "Shovels", "Hoes", "Bows", "Tridents",
-            "Maces", "Shields", "Helmets", "Chestplates", "Leggings", "Boots", "Totems", "Food",
-            "Potions", "Gems & Ingots", "Ores", "Plants", "Blocks", "Entities", "Particles",
-            "GUI / HUD", "Environment", "Items"
+            "Alle", "Crystals", "Totems", "Swords", "Axes", "Pickaxes", "Shovels", "Hoes", "Ranged",
+            "Armor", "Shields", "Food", "Potions", "Gems", "Wood", "Stone", "Glass", "Wool", "Blocks",
+            "Mobs", "Particles", "Environment", "GUI", "Items", "Misc"
     };
 
     public static final List<Entry> ENTRIES = new ArrayList<>();
-    public static final Map<String, Entry> BY_KEY = new HashMap<>();
-    private static final Preview EMPTY = new Preview(0, 0, new int[0]);
-    private static final Map<String, Preview> CACHE = new LinkedHashMap<>(64, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, Preview> eldest) {
-            return size() > 900;
-        }
-    };
+    public static final Map<String, Entry> BY_UID = new HashMap<>();
+
     private static final String PREFIX = "assets/minecraft/textures/";
-    private static final Set<String> SUBS = Set.of("item", "block", "entity", "particle", "gui", "environment");
+    private static final Set<String> ALLOWED = Set.of("item", "block", "entity", "particle", "environment",
+            "gui", "painting", "mob_effect");
+    private static final Map<Path, ZipFile> ZIPS = new ConcurrentHashMap<>();
 
     public static Path packDir() {
         return FabricLoader.getInstance().getGameDir().resolve("redclient").resolve("packs");
     }
 
+    public static int categoryIndex(String cat) {
+        for (int i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i].equals(cat)) return i;
+        return CATEGORIES.length - 1;
+    }
+
     public static void reload() {
+        closeAll();
         ENTRIES.clear();
-        BY_KEY.clear();
-        CACHE.clear();
+        BY_UID.clear();
         try {
             Files.createDirectories(packDir());
         } catch (IOException e) {
@@ -62,14 +62,24 @@ public final class PackIndex {
             s.sorted().forEach(p -> {
                 try {
                     if (Files.isDirectory(p)) scanDir(p);
-                    else if (p.getFileName().toString().toLowerCase().endsWith(".zip")) scanZip(p);
+                    else if (p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".zip")) scanZip(p);
                 } catch (Exception ignored) {
                 }
             });
         } catch (IOException ignored) {
         }
-        ENTRIES.sort(Comparator.comparing((Entry e) -> e.display().toLowerCase()).thenComparing(Entry::pack));
-        for (Entry e : ENTRIES) BY_KEY.put(e.key(), e);
+        ENTRIES.sort(Comparator.comparing((Entry e) -> e.name().toLowerCase(Locale.ROOT)).thenComparing(Entry::pack));
+        for (Entry e : ENTRIES) BY_UID.put(e.uid(), e);
+    }
+
+    public static synchronized void closeAll() {
+        for (ZipFile z : ZIPS.values()) {
+            try {
+                z.close();
+            } catch (IOException ignored) {
+            }
+        }
+        ZIPS.clear();
     }
 
     private static void scanZip(Path p) throws IOException {
@@ -85,152 +95,127 @@ public final class PackIndex {
 
     private static void scanDir(Path dir) throws IOException {
         String pack = dir.getFileName().toString();
-        try (Stream<Path> w = Files.walk(dir.resolve("assets/minecraft/textures"))) {
+        try (Stream<Path> w = Files.walk(dir, 12)) {
             w.filter(Files::isRegularFile).forEach(f ->
                     add(pack, dir.relativize(f).toString().replace('\\', '/'), dir, false));
         }
     }
 
-    private static void add(String pack, String path, Path source, boolean zip) {
-        if (!path.startsWith(PREFIX) || !path.endsWith(".png")) return;
+    private static void add(String pack, String arch, Path source, boolean zip) {
+        if (!arch.toLowerCase(Locale.ROOT).endsWith(".png")) return;
+        int i = arch.indexOf(PREFIX);
+        if (i < 0 || (i > 0 && arch.charAt(i - 1) != '/')) return;
+        String path = arch.substring(i);
         String rel = path.substring(PREFIX.length());
-        int slash = rel.indexOf('/');
-        if (slash < 0) return;
-        String sub = rel.substring(0, slash);
-        if (!SUBS.contains(sub)) return;
-        String stem = rel.substring(rel.lastIndexOf('/') + 1, rel.length() - 4);
-        String parent = "";
-        int ls = rel.lastIndexOf('/');
-        if (ls > 0) {
-            String pp = rel.substring(0, ls);
-            parent = pp.substring(pp.lastIndexOf('/') + 1);
-        }
-        String display = (sub.equals("gui") || sub.equals("entity") || sub.equals("environment")) && !parent.isEmpty()
-                ? parent + "/" + stem : stem;
-        ENTRIES.add(new Entry(pack, path, stem, display, classify(sub, stem.toLowerCase()), sub, source, zip));
+        int first = rel.indexOf('/');
+        if (first < 0) return;
+        String sub = rel.substring(0, first);
+        if (!ALLOWED.contains(sub)) return;
+        int last = rel.lastIndexOf('/');
+        String name = rel.substring(last + 1, rel.length() - 4);
+        String folder = rel.substring(0, last);
+        ENTRIES.add(new Entry(pack, path, arch, name, folder,
+                classify(sub, folder.toLowerCase(Locale.ROOT), name.toLowerCase(Locale.ROOT)), source, zip));
     }
 
-    private static final String[] FOOD = {"apple", "bread", "beef", "porkchop", "mutton", "chicken", "rabbit",
-            "cod", "salmon", "carrot", "potato", "melon_slice", "cookie", "cake", "pie", "stew", "soup",
-            "berries", "honey_bottle", "beetroot", "steak", "dried_kelp", "chorus_fruit", "tropical_fish",
-            "pufferfish", "rotten_flesh", "spider_eye"};
-    private static final String[] PLANTS = {"sapling", "flower", "tulip", "orchid", "allium", "azalea", "fern",
-            "grass", "vine", "leaves", "mushroom", "kelp", "seagrass", "roots", "bush", "lily", "dandelion",
-            "poppy", "rose", "peony", "lilac", "cornflower", "bluet", "wheat", "bamboo", "cactus"};
+    // ------------------------------------------------------------------ Kategorien
 
-    private static boolean any(String n, String[] keys) {
-        for (String k : keys) if (n.contains(k)) return true;
+    private static final Set<String> FOOD = Set.of("apple", "golden_apple", "enchanted_golden_apple", "bread",
+            "cookie", "cake", "pumpkin_pie", "carrot", "golden_carrot", "potato", "baked_potato",
+            "poisonous_potato", "beetroot", "beetroot_soup", "mushroom_stew", "rabbit_stew", "suspicious_stew",
+            "melon_slice", "sweet_berries", "glow_berries", "chorus_fruit", "dried_kelp", "honey_bottle",
+            "cooked_beef", "beef", "cooked_porkchop", "porkchop", "cooked_chicken", "chicken", "cooked_mutton",
+            "mutton", "cooked_rabbit", "rabbit", "cooked_cod", "cod", "cooked_salmon", "salmon", "tropical_fish",
+            "pufferfish", "rotten_flesh", "spider_eye");
+
+    private static final Set<String> GEMS = Set.of("diamond", "emerald", "coal", "charcoal", "lapis_lazuli",
+            "redstone", "quartz", "amethyst_shard", "netherite_scrap", "diamond_block", "emerald_block",
+            "gold_block", "iron_block", "copper_block", "netherite_block", "lapis_block", "redstone_block",
+            "coal_block", "quartz_block", "amethyst_block");
+
+    private static boolean has(String n, String... parts) {
+        for (String p : parts) if (n.contains(p)) return true;
         return false;
     }
 
-    private static String classify(String sub, String n) {
+    private static String classify(String sub, String folder, String n) {
         switch (sub) {
-            case "gui":
-                return "GUI / HUD";
             case "particle":
                 return "Particles";
             case "environment":
                 return "Environment";
+            case "gui":
+                return "GUI";
+            case "painting":
+            case "mob_effect":
+                return "Misc";
             default:
                 break;
         }
-        if (n.contains("crystal")) return "Crystals";
+        if (n.contains("crystal") && !n.contains("amethyst")) return "Crystals";
         if (n.contains("totem")) return "Totems";
+        boolean armorStand = n.contains("armor_stand");
+        if (!armorStand && (n.endsWith("_helmet") || n.endsWith("_chestplate") || n.endsWith("_leggings")
+                || n.endsWith("_boots") || n.contains("elytra") || n.contains("armor") || folder.contains("equipment")))
+            return "Armor";
         if (n.endsWith("_sword")) return "Swords";
         if (n.endsWith("_pickaxe")) return "Pickaxes";
         if (n.endsWith("_axe")) return "Axes";
         if (n.endsWith("_shovel")) return "Shovels";
         if (n.endsWith("_hoe")) return "Hoes";
-        if (n.equals("bow") || n.startsWith("bow_") || n.contains("crossbow")) return "Bows";
-        if (n.contains("trident")) return "Tridents";
-        if (n.equals("mace") || n.startsWith("mace_")) return "Maces";
+        if (n.equals("bow") || n.startsWith("bow_") || n.equals("crossbow") || n.startsWith("crossbow")
+                || n.contains("arrow") || n.contains("trident") || n.equals("mace") || n.equals("wind_charge"))
+            return "Ranged";
         if (n.contains("shield")) return "Shields";
-        if (n.contains("helmet")) return "Helmets";
-        if (n.contains("chestplate")) return "Chestplates";
-        if (n.contains("leggings")) return "Leggings";
-        if (n.contains("boots")) return "Boots";
-        if (n.contains("potion") || n.equals("experience_bottle") || n.equals("dragon_breath")
-                || n.equals("glass_bottle")) return "Potions";
-        if (sub.equals("item")) {
-            if (any(n, FOOD)) return "Food";
-            if (n.endsWith("_ingot") || n.endsWith("_nugget") || n.endsWith("_scrap") || n.startsWith("raw_")
-                    || n.equals("diamond") || n.equals("emerald") || n.equals("coal") || n.equals("charcoal")
-                    || n.equals("quartz") || n.equals("lapis_lazuli") || n.equals("amethyst_shard")
-                    || n.equals("redstone")) return "Gems & Ingots";
-        }
+        if (FOOD.contains(n)) return "Food";
+        if (n.contains("potion") || n.contains("bottle")) return "Potions";
+        if (GEMS.contains(n) || n.contains("_ore") || n.endsWith("_ingot") || n.endsWith("_nugget") || n.startsWith("raw_"))
+            return "Gems";
         if (sub.equals("block")) {
-            if (n.contains("_ore")) return "Ores";
-            if (any(n, PLANTS)) return "Plants";
+            if (has(n, "log", "planks", "stripped_", "hyphae", "stem") || n.endsWith("_wood")) return "Wood";
+            if (n.contains("glass")) return "Glass";
+            if (has(n, "wool", "carpet", "concrete", "terracotta")) return "Wool";
+            if (has(n, "stone", "cobble", "deepslate", "brick", "andesite", "granite", "diorite", "basalt",
+                    "blackstone", "tuff", "obsidian")) return "Stone";
             return "Blocks";
         }
-        if (sub.equals("entity")) return "Entities";
+        if (sub.equals("entity")) return "Mobs";
         return "Items";
     }
 
-    /** Liest eine Datei aus dem Pack des Eintrags; null, wenn sie nicht existiert. */
-    public static byte[] readPath(Entry e, String path) throws IOException {
-        if (!e.zip()) {
-            Path f = e.source().resolve(path);
-            return Files.exists(f) ? Files.readAllBytes(f) : null;
-        }
-        try (ZipFile z = new ZipFile(e.source().toFile())) {
-            ZipEntry ze = z.getEntry(path);
-            if (ze == null) return null;
-            return z.getInputStream(ze).readAllBytes();
-        }
-    }
+    // ------------------------------------------------------------------ Dateizugriff
 
-    /**
-     * Vorschau mit Box-Filter (Mittelwert). Texturen bis maxDim werden pixelgenau gezeigt,
-     * groessere werden ohne Rauschen verkleinert.
-     */
-    public static Preview preview(Entry e, int maxDim) {
-        return CACHE.computeIfAbsent(e.key() + "@" + maxDim, k -> load(e, maxDim));
-    }
-
-    private static Preview load(Entry e, int maxDim) {
-        try {
-            byte[] b = readPath(e, e.path());
-            if (b == null) return EMPTY;
-            BufferedImage img = ImageIO.read(new ByteArrayInputStream(b));
-            if (img == null) return EMPTY;
-            int w = img.getWidth(), h = img.getHeight();
-            if ((e.sub().equals("item") || e.sub().equals("block")) && h > w) h = w; // Animation: erstes Bild
-            int[] src = img.getRGB(0, 0, w, h, null, 0, w);
-            float scale = Math.min(1f, Math.min((float) maxDim / w, (float) maxDim / h));
-            int tw = Math.max(1, Math.round(w * scale));
-            int th = Math.max(1, Math.round(h * scale));
-            int[] out = new int[tw * th];
-            for (int ty = 0; ty < th; ty++) {
-                int sy0 = ty * h / th;
-                int sy1 = Math.max(sy0 + 1, (ty + 1) * h / th);
-                for (int tx = 0; tx < tw; tx++) {
-                    int sx0 = tx * w / tw;
-                    int sx1 = Math.max(sx0 + 1, (tx + 1) * w / tw);
-                    long a = 0, r = 0, g = 0, bl = 0;
-                    int n = 0;
-                    for (int sy = sy0; sy < sy1; sy++) {
-                        for (int sx = sx0; sx < sx1; sx++) {
-                            int p = src[sy * w + sx];
-                            int pa = p >>> 24;
-                            a += pa;
-                            r += (long) ((p >> 16) & 255) * pa;
-                            g += (long) ((p >> 8) & 255) * pa;
-                            bl += (long) (p & 255) * pa;
-                            n++;
-                        }
-                    }
-                    if (a == 0) {
-                        out[ty * tw + tx] = 0;
-                    } else {
-                        int oa = (int) (a / n);
-                        out[ty * tw + tx] = (oa << 24) | ((int) (r / a) << 16) | ((int) (g / a) << 8) | (int) (bl / a);
-                    }
-                }
+    private static ZipFile zip(Path p) throws IOException {
+        ZipFile z = ZIPS.get(p);
+        if (z != null) return z;
+        synchronized (PackIndex.class) {
+            z = ZIPS.get(p);
+            if (z == null) {
+                z = new ZipFile(p.toFile());
+                ZIPS.put(p, z);
             }
-            return new Preview(tw, th, out);
-        } catch (Exception ex) {
-            return EMPTY;
+            return z;
+        }
+    }
+
+    /** Liest eine Datei des Packs (Textur in Originalgroesse). Wirft IOException, falls sie fehlt. */
+    public static byte[] read(Entry e, String archPath) throws IOException {
+        byte[] b = readOptional(e, archPath);
+        if (b == null) throw new IOException("Eintrag fehlt: " + archPath);
+        return b;
+    }
+
+    /** Wie {@link #read}, liefert aber null wenn die Datei nicht existiert (z. B. .mcmeta). */
+    public static byte[] readOptional(Entry e, String archPath) throws IOException {
+        if (!e.zip()) {
+            Path f = e.source().resolve(archPath);
+            return Files.isRegularFile(f) ? Files.readAllBytes(f) : null;
+        }
+        ZipFile z = zip(e.source());
+        ZipEntry ze = z.getEntry(archPath);
+        if (ze == null) return null;
+        try (InputStream in = z.getInputStream(ze)) {
+            return in.readAllBytes();
         }
     }
 }

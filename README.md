@@ -1,15 +1,20 @@
-# Red Texture Menu (Fabric, Minecraft 1.21.11)
+# Red Texture Menu 1.1.0  (Fabric, Minecraft 1.21.11)
 
-Client-Mod mit grossem Texture-Browser.
+Befehl: `/redmenu`
 
-- `/redmenu` oeffnet das Menue
-- Packs (.zip oder entpackte Ordner) in `.minecraft/redclient/packs/` kopieren, dann "Neu laden"
-- Tab **Textures**: Kategorien links, Suche oben, Raster mit weichem Scrollen, rechts die Liste der Auswahl.
-  Textur anklicken = auswaehlen / abwaehlen. **Anwenden** schreibt das Pack `resourcepacks/RedMenuSelection`,
-  **Fertig** schliesst das Menue, aktiviert das Pack ganz oben und laedt alle Resource Packs neu.
-- Tab **HUD**: Menuefarbe, Hintergrund-Textur, Deckkraft, Smooth Scrolling, Motion Blur, Sounds
-- Einstellungen werden in `config/redtextures.json` gespeichert
+Packs ablegen in `.minecraft/redclient/packs` (.zip oder entpackte Ordner).
+
+## Bedienung
+- Tab TEXTURES: Kategorie links, Textur anklicken = auswaehlen (nochmal = abwaehlen), Rechtsklick = markieren.
+  Rechts oben steht die Auswahlliste. Unten rechts: **Anwenden** (baut das Pack) und **Done** (laedt alle Resource Packs neu).
+- Tab HUD: Akzentfarbe, Hintergrundfarbe (Hex moeglich), Menue-Textur (Muster oder eine Textur aus deinen Packs kacheln),
+  Deckkraft, Scroll-Glaette, Motion Blur, Sound-Lautstaerke, Tipp-Sounds an/aus.
+
+## Wie "Anwenden" funktioniert
+Die ausgewaehlten Texturen werden unveraendert (inkl. .mcmeta fuer Animationen) in ein Pack
+`resourcepacks/RedClient_Selection/` kopiert. Done aktiviert es ganz oben und laedt neu.
+Leere Auswahl + Anwenden entfernt das Pack wieder.
 
 ## Bauen
-Repo auf GitHub hochladen -> Tab "Actions" -> Workflow "build" -> Artifact `redtextures` herunterladen,
-die `.jar` (nicht `-sources`) in den `mods`-Ordner legen. Benoetigt Fabric Loader + Fabric API fuer 1.21.11.
+    gradle build        (oder ./gradlew build, wenn du den Wrapper hast)
+Die Jar liegt danach in build/libs/. Mappings: Yarn. Versionen in gradle.properties pruefen.
